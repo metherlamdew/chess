@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Online Chess</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>♞</text></svg>">
+<style>
+*{box-sizing:border-box}
+:root{--bg:#e9e4da;--fg:#23201b;--mut:#6b6458;--btn:#d6cdbd;--ink:#23201b}
+@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#1b2220;--fg:#ece7dc;--mut:#9aa39d;--btn:#2d3835;--ink:#ece7dc}}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px Georgia,"Times New Roman",serif;padding:16px 12px;display:flex;justify-content:center}
+#app{width:100%;max-width:520px;display:flex;flex-direction:column;align-items:center;gap:10px}
+h1{font-size:1.5rem;margin:0}
+#home,#game{width:100%;display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center}
+#info{color:var(--mut);font-size:.95rem}
+#st{font-size:1.1rem;min-height:1.4em}
+.cap{min-height:1.4em;font-size:1.2rem;color:var(--mut);align-self:flex-start;letter-spacing:.04em}
+#board{width:100%;aspect-ratio:1;display:grid;grid-template-columns:repeat(8,minmax(0,1fr));box-shadow:0 0 0 3px var(--ink);container-type:inline-size}
+.sq{display:flex;align-items:center;justify-content:center;font-size:min(10vw,52px);font-size:10cqw;line-height:1;cursor:pointer;position:relative;user-select:none;-webkit-user-select:none}
+.l{background:#ecd9b0}.d{background:#9c6b43}
+.last{box-shadow:inset 0 0 0 100px #f2d44a66}
+.sel{box-shadow:inset 0 0 0 100px #4aa3f288}
+.chk{box-shadow:inset 0 0 0 100px #e5303088}
+.mv::after{content:"";width:28%;height:28%;border-radius:50%;background:#0006;position:absolute}
+.mv.cp::after{width:88%;height:88%;background:none;border:5px solid #0006}
+.w{color:#fff;text-shadow:0 0 2px #000,0 0 2px #000,0 0 3px #000}
+.b{color:#171717;text-shadow:0 0 1px #fff9}
+.bar{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+button,input{font:inherit;color:var(--fg);border:1px solid var(--ink);border-radius:4px;padding:8px 16px}
+button{background:var(--btn);cursor:pointer}
+button:focus-visible{outline:3px solid #4aa3f2}
+input{background:transparent;width:100%;min-width:0;padding:8px}
+#share{display:flex;gap:8px;width:100%}
+#promo{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;gap:10px;z-index:20}
+#promo button{font-size:3rem;padding:4px 14px;line-height:1.1}
+</style>
+</head>
+<body>
+<div id="app">
+<h1>Online Chess</h1>
+<div id="home">
+  <p>Start a game, then send the link to your opponent. Each of you plays on your own device.</p>
+  <button id="create">Create game</button>
+  <div id="herr"></div>
+</div>
+<div id="game" hidden>
+  <div id="info"></div>
+  <div class="cap" id="ct"></div>
+  <div id="board" role="grid" aria-label="Chess board"></div>
+  <div class="cap" id="cb"></div>
+  <div id="st" aria-live="polite"></div>
+  <div id="share" hidden><input id="link" readonly aria-label="Game link"><button id="copy">Copy link</button></div>
+  <div class="bar">
+    <button id="join" hidden>Join as Black</button>
+    <button id="flip">Flip board</button>
+    <button id="resign" hidden>Resign</button>
+    <button id="new">New game</button>
+  </div>
+</div>
+</div>
+<div id="promo"></div>
+<script>
+const G={K:"♚",Q:"♛",R:"♜",B:"♝",N:"♞",P:"♟"},V="\uFE0E";
+const $=i=>document.getElementById(i);
+let id=new URLSearchParams(location.search).get("g"),tok="",S=null,sel=null,moves=[],pend=null,manual=false,busy=false,timer=null;
+const key=()=>"chess:"+id;
+const getTok=()=>{try{return localStorage.getItem(key())||""}catch(e){return ""}};
+const setTok=t=>{tok=t;try{localStorage.setItem(key(),t)}catch(e){}};
+async function api(method,body,qs){
+  const r=await fetch("/api/game"+(qs||""),{method,headers:{"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});
+  let j;try{j=await r.json()}catch(e){throw new Error("Server not reachable.")}
+  if(!r.ok)throw new Error(j.error||"Request failed.");
+  return j;
+}
+function show(j){if(j.token)setTok(j.token);S=j;sel=null;moves=[];render()}
+async function poll(){
+  if(busy||!id)return;
+  try{const j=await api("GET",null,"?id="+id+"&token="+encodeURIComponent(tok)+"&v="+(S?S.v:0));if(!j.same)show(j)}
+  catch(e){$("st").textContent=e.message;if(/not found/i.test(e.message))clearInterval(timer)}
+}
+function start(){
+  $("home").hidden=true;$("game").hidden=false;
+  tok=getTok();poll();
+  clearInterval(timer);timer=setInterval(poll,1500);
+}
+const name=c=>c=="w"?"White":"Black";
+function glyphs(arr){return arr.map(x=>'<span class="'+x[0]+'">'+G[x[1]]+V+"</span>").join("")}
+function render(){
+  const B=$("board");B.innerHTML="";
+  const flip=(S.color=="b")!==manual,b=S.s.b;
+  for(let i=0;i<64;i++){
+    let r=i>>3,c=i&7;
+    if(flip){r=7-r;c=7-c}
+    const p=b[r][c],d=document.createElement("div");
+    let cl="sq "+((r+c)%2?"d":"l");
+    if(S.s.last&&S.s.last.some(x=>x[0]==r&&x[1]==c))cl+=" last";
+    if(sel&&sel[0]==r&&sel[1]==c)cl+=" sel";
+    if(S.check&&p==S.s.t+"K")cl+=" chk";
+    const mv=moves.find(m=>m[0]==r&&m[1]==c);
+    if(mv)cl+=" mv"+(p||mv[2]=="ep"?" cp":"");
+    d.className=cl;
+    if(p){const s=document.createElement("span");s.className=p[0];s.textContent=G[p[1]]+V;d.appendChild(s)}
+    d.onclick=()=>click(r,c);
+    B.appendChild(d);
+  }
+  $("cb").innerHTML=glyphs(flip?S.s.cap.b:S.s.cap.w);
+  $("ct").innerHTML=glyphs(flip?S.s.cap.w:S.s.cap.b);
+  const me=S.color,t=S.s.t,r=S.res;
+  $("info").textContent=me?"You are playing "+name(me):(S.joined?"Spectating":"Game "+S.id);
+  let msg;
+  if(r){
+    const who=r.type=="resign"?" by resignation":"";
+    msg=r.type=="draw"?"Stalemate. The game is a draw.":(r.type=="mate"?"Checkmate. ":"")+(me?(r.winner==me?"You win":"You lose"):name(r.winner)+" wins")+who+".";
+  }else if(!S.joined)msg=me?"Waiting for your opponent to join.":"Waiting for a second player.";
+  else msg=(me?(t==me?"Your turn":"Opponent’s turn"):name(t)+" to move")+(S.check?" (check)":"");
+  $("st").textContent=msg;
+  $("share").hidden=!(me=="w"&&!S.joined);
+  $("link").value=location.origin+location.pathname+"?g="+S.id;
+  $("join").hidden=!(!me&&!S.joined);
+  $("resign").hidden=!(me&&S.joined&&!r);
+}
+function click(r,c){
+  if(!S||S.res||pend||busy)return;
+  const m=sel&&moves.find(x=>x[0]==r&&x[1]==c);
+  if(m){
+    if(S.s.b[sel[0]][sel[1]][1]=="P"&&(r==0||r==7)){pend={f:sel,t:[r,c]};promo()}
+    else send(sel,[r,c]);
+    return;
+  }
+  const l=S.legal[r+","+c];
+  if(l){sel=[r,c];moves=l}else{sel=null;moves=[]}
+  render();
+}
+async function send(f,t,p){
+  busy=true;
+  try{const j=await api("POST",{action:"move",id,token:tok,from:f,to:t,promo:p});busy=false;show(j)}
+  catch(e){busy=false;$("st").textContent=e.message;sel=null;moves=[];poll()}
+}
+function promo(){
+  const P=$("promo");P.innerHTML="";P.style.display="flex";
+  for(const t of["Q","R","B","N"]){
+    const b=document.createElement("button");
+    b.innerHTML='<span class="'+S.color+'">'+G[t]+V+"</span>";
+    b.setAttribute("aria-label","Promote to "+t);
+    b.onclick=()=>{P.style.display="none";const p=pend;pend=null;send(p.f,p.t,t)};
+    P.appendChild(b);
+  }
+}
+$("create").onclick=async()=>{
+  $("create").disabled=true;
+  try{
+    const j=await api("POST",{action:"create"});
+    id=j.id;setTok(j.token);history.replaceState(null,"","?g="+id);
+    S=null;start();
+  }catch(e){$("herr").textContent=e.message;$("create").disabled=false}
+};
+$("join").onclick=async()=>{try{show(await api("POST",{action:"join",id,token:tok}))}catch(e){$("st").textContent=e.message}};
+$("resign").onclick=async()=>{if(confirm("Resign this game?"))try{show(await api("POST",{action:"resign",id,token:tok}))}catch(e){$("st").textContent=e.message}};
+$("flip").onclick=()=>{manual=!manual;if(S)render()};
+$("new").onclick=()=>{location.href=location.pathname};
+$("copy").onclick=async()=>{
+  try{await navigator.clipboard.writeText($("link").value);$("copy").textContent="Copied"}
+  catch(e){$("link").select();$("copy").textContent="Select and copy"}
+  setTimeout(()=>$("copy").textContent="Copy link",1500);
+};
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)poll()});
+if(id)start();
+</script>
+</body>
+</html>
